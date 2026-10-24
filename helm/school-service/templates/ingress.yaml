@@ -1,0 +1,48 @@
+{{- if .Values.ingress.enabled }}
+{{- $g := .Values.global }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "school.name" . }}
+  labels:
+    {{- include "school.labels" (dict "root" . "component" "api") | nindent 4 }}
+  annotations:
+    # ONE shared Application Load Balancer for all services: every Ingress with the same group name is merged into it.
+    alb.ingress.kubernetes.io/group.name: {{ required "global.ingress.groupName is required when ingress is enabled" $g.ingress.groupName | quote }}
+    # Rules from lower order numbers are evaluated first. Specific services (fee, attendance) must beat the general
+    # /api/v1/students rule of the Student service, or /students/{id}/fees would be sent to the wrong service.
+    alb.ingress.kubernetes.io/group.order: {{ .Values.ingress.order | quote }}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.probes.readiness.path | quote }}
+    alb.ingress.kubernetes.io/success-codes: "200"
+    {{- if $g.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ $g.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    {{- end }}
+    {{- if $g.ingress.securityGroupId }}
+    # The load balancer accepts traffic only from CloudFront (a managed prefix list on this security group).
+    alb.ingress.kubernetes.io/security-groups: {{ $g.ingress.securityGroupId | quote }}
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - http:
+        paths:
+          {{- range .Values.ingress.paths }}
+          - path: {{ .path }}
+            pathType: {{ .type | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "school.name" $ }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

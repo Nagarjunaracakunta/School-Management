@@ -1,0 +1,55 @@
+# Creates (or repairs) the per-service schemas and database roles, setting their passwords from Secrets Manager.
+# A POST-install/upgrade hook: it needs the service account above, which is created first. In Argo CD it runs as PostSync,
+# and the services are deployed in a later wave, so their migration jobs find the roles and schemas ready.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-bootstrap
+  labels:
+    app.kubernetes.io/name: db-bootstrap
+    app.kubernetes.io/part-of: school
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.dbTools.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-bootstrap
+        app.kubernetes.io/part-of: school
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.global.migrationServiceAccount }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bootstrap
+          image: {{ printf "%s/school/db-tools:%s" (required "global.imageRegistry is required" .Values.global.imageRegistry) (required "dbTools.image.tag is required: the git commit SHA built by CI" .Values.dbTools.image.tag) | quote }}
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.global.region | quote }}
+            - name: MASTER_SECRET_ARN
+              value: {{ required "global.secrets.rdsMasterArn is required" .Values.global.secrets.rdsMasterArn | quote }}
+            - name: DB_APP_SECRET_ARNS
+              value: {{ required "global.secrets.dbAppArns is required" .Values.global.secrets.dbAppArns | toJson | quote }}
+            - name: DB_MIGRATOR_SECRET_ARNS
+              value: {{ required "global.secrets.dbMigratorArns is required" .Values.global.secrets.dbMigratorArns | toJson | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 16Mi }

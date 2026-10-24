@@ -1,0 +1,113 @@
+name: Service CI (reusable)
+
+# Called by ci.yml once per changed service. The leading underscore marks it as "not a workflow you run by itself".
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: auth, admission, student, fee, attendance or notification
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ inputs.service }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: services/${{ inputs.service }}
+    services:
+      postgres:
+        image: postgres:16 # the same major version as RDS
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust # throwaway database on the runner; no password exists to leak
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12" # the version the container image runs; tests must run on the same one
+          cache: pip
+          cache-dependency-path: services/${{ inputs.service }}/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Lint and formatting
+        run: |
+          ruff check app tests migrations
+          ruff format --check app tests migrations
+      - name: Unit and API tests, with a coverage floor
+        run: pytest -q -p no:cacheprovider --cov-fail-under=85 --cov-report=xml # fails below 85%; today's numbers are 91-97%
+      - name: The same tests on real PostgreSQL (migrations, row locks, concurrency)
+        env:
+          PGHOST: localhost
+          SERVICE: ${{ inputs.service }}
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          with psycopg.connect(f"host=localhost user=postgres dbname=postgres", autocommit=True) as c:
+              c.execute("CREATE DATABASE school_test")
+          with psycopg.connect("host=localhost user=postgres dbname=school_test", autocommit=True) as c:
+              c.execute(f"CREATE SCHEMA {os.environ['SERVICE']}_test")
+          PY
+          export TEST_DATABASE_URL="postgresql+psycopg://postgres@localhost:5432/school_test?options=-csearch_path%3D${SERVICE}_test"
+          pytest -q -p no:cacheprovider --no-cov
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-${{ inputs.service }}
+          path: services/${{ inputs.service }}/coverage.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
+  image:
+    name: image (${{ inputs.service }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Run the service's tests INSIDE the image build (Python 3.12, clean install)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/${{ inputs.service }}
+          file: docker/python-service.Dockerfile
+          target: test
+          platforms: linux/amd64 # the architecture of our EKS nodes
+          push: false
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.service }}
+      - name: Build the runtime image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/${{ inputs.service }}
+          file: docker/python-service.Dockerfile
+          platforms: linux/amd64
+          load: true # keep it local: this job never pushes
+          tags: school/${{ inputs.service }}:ci
+          cache-from: type=gha,scope=${{ inputs.service }}
+      - name: The image keeps the promises the Dockerfile makes
+        env:
+          IMAGE: school/${{ inputs.service }}:ci
+        run: |
+          set -eu
+          test "$(docker run --rm --entrypoint id "$IMAGE" -u)" = "10001"        # non-root
+          docker run --rm --entrypoint python "$IMAGE" -c "import app.main"      # the app imports (catches the Python 3.12 annotation bug)
+          docker run --rm --entrypoint sh "$IMAGE" -c '! test -e /app/tests'      # no tests shipped
+          if docker run --rm --entrypoint pip "$IMAGE" list 2>/dev/null | grep -Eiq '^(pytest|ruff) '; then echo "dev tools in the image"; exit 1; fi
+      - name: Scan the image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: school/${{ inputs.service }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true # fail only on problems that HAVE a fix available
+          exit-code: "1"
+          trivyignores: .trivyignore

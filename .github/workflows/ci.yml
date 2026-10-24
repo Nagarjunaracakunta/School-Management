@@ -1,0 +1,253 @@
+name: CI
+
+# Runs on every pull request and on every push to main. Only the parts of the repository a change touches are tested
+# (scripts/ci/changed.py); the last job, `ci-gate`, is the ONLY check branch protection needs to require.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: # a manual run tests everything
+
+permissions:
+  contents: read # least privilege for every job; a job that needs more asks for it explicitly
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }} # a new push to a PR cancels the outdated run
+
+jobs:
+  # ---- what changed? ---------------------------------------------------------------------------------------------
+  changes:
+    name: what changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+      terraform: ${{ steps.detect.outputs.terraform }}
+      helm: ${{ steps.detect.outputs.helm }}
+      lambdas: ${{ steps.detect.outputs.lambdas }}
+      tools: ${{ steps.detect.outputs.tools }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the whole history, so the diff against the base commit works
+          persist-credentials: false
+      - id: detect
+        env: # values go through the environment, never pasted into the script text (prevents script injection)
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$MANUAL" = "true" ]; then
+            python3 scripts/ci/changed.py --all --github-output
+          else
+            python3 scripts/ci/changed.py --base "$BASE" --head "$HEAD" --github-output
+          fi
+
+  # ---- the six Python services (one parallel run per changed service) ----------------------------------------------
+  services:
+    name: service
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    strategy:
+      fail-fast: false # one failing service must not hide the others' results
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    uses: ./.github/workflows/_service.yml
+    with:
+      service: ${{ matrix.service }}
+
+  # ---- the React app --------------------------------------------------------------------------------------------------
+  frontend:
+    name: frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci # exactly what package-lock.json says, never newer
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  # ---- Terraform: formatting, validation, offline tests, drift guards -----------------------------------------------
+  terraform:
+    name: terraform
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.6 # the version the code was written and tested with
+          terraform_wrapper: false # the wrapper changes the output our scripts read
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.terraform.d/plugin-cache # the AWS provider is ~800 MB: download it once, not on every run
+          key: terraform-providers-${{ hashFiles('terraform/environments/dev/.terraform.lock.hcl') }}
+      - run: mkdir -p ~/.terraform.d/plugin-cache
+      - run: scripts/tf/check.sh # formatting, validation, 217 offline tests, no AWS account needed
+
+  # ---- Helm: lint, render, validate against Kubernetes schemas, property tests ---------------------------------
+  helm:
+    name: helm
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.3
+      - name: Install kubeconform (checksum-verified)
+        run: |
+          curl -fsSLo kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  kubeconform.tgz" | sha256sum -c -
+          tar xzf kubeconform.tgz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+      - run: scripts/helm/check.sh
+
+  # ---- the delivery Lambda and the database bootstrap tool -------------------------------------------------------
+  lambdas:
+    name: lambda tests
+    needs: changes
+    if: needs.changes.outputs.lambdas == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: lambdas/notification_delivery/requirements-dev.txt
+      - run: pip install -r lambdas/notification_delivery/requirements-dev.txt
+      - run: python -m pytest -q lambdas/notification_delivery/tests
+
+  tools:
+    name: db-bootstrap tool
+    needs: changes
+    if: needs.changes.outputs.tools == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres: # a REAL PostgreSQL: the tool's tests prove what the database roles can and cannot do
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust # throwaway database on the runner; no password exists to leak
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/db-bootstrap/requirements-dev.txt
+      - run: pip install -r tools/db-bootstrap/requirements-dev.txt
+      - run: python -m ruff check tools/db-bootstrap && python -m ruff format --check tools/db-bootstrap
+      - run: python -m pytest -q tools/db-bootstrap/tests
+        env:
+          TEST_PG_SUPERUSER_DSN: host=localhost port=5432 user=postgres
+
+  # ---- the CI scripts themselves ------------------------------------------------------------------------------------
+  ci-scripts:
+    name: ci scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==9.1.1 pyyaml==6.0.3
+      - run: python -m pytest -q scripts/ci/tests scripts/argocd/tests scripts/e2e/tests # includes: the committed Argo CD files equal what the generator produces
+
+  # ---- the workflow files themselves, and secrets accidentally committed ---------------------------------------------
+  workflow-lint:
+    name: workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint (checksum-verified)
+        run: |
+          curl -fsSLo actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint
+          ./actionlint -color
+
+  secrets-scan:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scans the whole history: a secret removed in a later commit is still leaked
+          persist-credentials: false
+      - name: gitleaks (checksum-verified)
+        run: |
+          curl -fsSLo gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
+          tar xzf gitleaks.tgz gitleaks
+          ./gitleaks git --redact --no-banner --verbose
+
+  # ---- the one check branch protection requires -----------------------------------------------------------------------
+  ci-gate:
+    name: ci-gate
+    if: always() # must run (and judge) even when other jobs failed or were skipped
+    needs: [changes, services, frontend, terraform, helm, lambdas, tools, ci-scripts, workflow-lint, secrets-scan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded or was legitimately skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = {name: job["result"] for name, job in json.loads(os.environ["NEEDS"]).items()}
+          for name, result in sorted(results.items()):
+              print(f"{name:14s} {result}")
+          bad = {n: r for n, r in results.items() if r not in ("success", "skipped")}
+          if bad:
+              sys.exit(f"FAILED: {bad}")
+          print("all required checks passed")
+          PY

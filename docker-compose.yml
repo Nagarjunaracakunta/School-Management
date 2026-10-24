@@ -1,0 +1,327 @@
+# The whole platform on your laptop.
+#
+#   scripts/local-up.sh            # does everything below for you (recommended)
+#
+# By hand:
+#   scripts/db/gen-secrets.sh && scripts/gen-dev-keys.sh                      # one-time: local passwords + signing keys
+#   docker compose --env-file .dev-secrets/db.env up -d postgres              # just the database (as before)
+#   docker compose --env-file .dev-secrets/db.env --profile full up -d --build # everything
+#
+# Open http://localhost:8080 (the nginx container stands in for CloudFront + the ALB).
+# Data lives in the named volume "school-pgdata";  `docker compose down -v` wipes it.
+#
+# What starts, in order:
+#   postgres -> db-bootstrap (schemas + roles) -> migrate-<service> (tables) -> <service>
+#   moto (a local AWS emulator) -> aws-init (queue, dead-letter queue, topic) -> admission/fee/attendance, worker
+name: school
+
+# Every application container is locked down the way it will be in Kubernetes (Phase 14):
+x-hardening: &hardening
+  read_only: true                       # the image's files cannot be modified at runtime
+  tmpfs: [/tmp]                         # the only writable place, and it lives in memory
+  cap_drop: [ALL]                       # no Linux capabilities
+  security_opt: ["no-new-privileges:true"]
+
+x-app-env: &app-env
+  ENVIRONMENT: local
+  LOG_LEVEL: INFO
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: school
+  AUTO_CREATE_TABLES: "false"           # tables come from the migrations, never from the application
+  JWT_ISSUER: school-auth
+  JWT_AUDIENCE: school-api
+
+# Pretend AWS. The credentials are dummies: the emulator accepts anything. Real AWS uses IAM roles, never keys.
+x-local-aws: &local-aws
+  AWS_ENDPOINT_URL: http://moto:5000
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_REGION: ap-south-1
+  AWS_DEFAULT_REGION: ap-south-1
+  SQS_QUEUE_URL: http://moto:5000/123456789012/school-events
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD:?run scripts/db/gen-secrets.sh, then use --env-file .dev-secrets/db.env}
+      POSTGRES_DB: school
+    ports:
+      - "127.0.0.1:5432:5432"           # reachable from this machine only, never from the network
+    volumes:
+      - school-pgdata:/var/lib/postgresql/data
+      - ./scripts/db/init-local.sql:/docker-entrypoint-initdb.d/10-init-local.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d school"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  db-bootstrap:
+    profiles: [full]
+    image: postgres:16                  # has psql; runs the same script you would run by hand
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${PG_ADMIN_PASSWORD:?}
+      PGDATABASE: school
+      GENERATE_PASSWORDS: "0"
+      DB_SECRETS_FILE: /work/.dev-secrets/db.env
+    volumes:
+      - ./scripts/db:/work/scripts/db:ro
+      - ./.dev-secrets:/work/.dev-secrets:ro
+    entrypoint: ["bash", "/work/scripts/db/bootstrap.sh"]
+
+  moto:
+    profiles: [full]
+    image: motoserver/moto:5.2.4        # a local imitation of SQS and SNS
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/moto-api/', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  aws-init:
+    profiles: [full]
+    image: school/notification:local
+    pull_policy: never                  # built by the `notification` service below
+    restart: "no"
+    depends_on:
+      moto: {condition: service_healthy}
+    environment: {<<: *local-aws}
+    volumes:
+      - ./scripts/local_aws_init.py:/scripts/local_aws_init.py:ro
+    command: ["python", "/scripts/local_aws_init.py"]
+
+  migrate-auth:
+    profiles: [full]
+    image: school/auth:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: auth_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${AUTH_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  migrate-admission:
+    profiles: [full]
+    image: school/admission:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: admission_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${ADMISSION_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  migrate-student:
+    profiles: [full]
+    image: school/student:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: student_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${STUDENT_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  migrate-fee:
+    profiles: [full]
+    image: school/fee:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: fee_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${FEE_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  migrate-attendance:
+    profiles: [full]
+    image: school/attendance:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: attendance_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${ATTENDANCE_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  migrate-notification:
+    profiles: [full]
+    image: school/notification:local
+    pull_policy: never                  # built by the service of the same name below
+    restart: "no"
+    <<: *hardening
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: notification_migrator             # the role that may change tables; the running service cannot
+      DB_PASSWORD: ${NOTIFICATION_MIGRATOR_PASSWORD:?}
+    command: ["alembic", "upgrade", "head"]
+
+  auth:
+    profiles: [full]
+    image: school/auth:local
+    build: {context: services/auth, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-auth: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: auth_svc                  # read/write rows only
+      DB_PASSWORD: ${AUTH_APP_PASSWORD:?}
+      JWT_PRIVATE_KEY_FILE: /run/keys/jwt_private.pem
+    volumes:
+      - ./.dev-keys/jwt_private.pem:/run/keys/jwt_private.pem:ro   # only the Auth service ever sees the private key
+
+  student:
+    profiles: [full]
+    image: school/student:local
+    build: {context: services/student, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-student: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: student_svc                  # read/write rows only
+      DB_PASSWORD: ${STUDENT_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+
+  admission:
+    profiles: [full]
+    image: school/admission:local
+    build: {context: services/admission, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-admission: {condition: service_completed_successfully}
+      aws-init: {condition: service_completed_successfully}
+    environment:
+      <<: [*app-env, *local-aws]
+      DB_USER: admission_svc                  # read/write rows only
+      DB_PASSWORD: ${ADMISSION_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+      STUDENT_SERVICE_URL: http://student:8000
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+
+  fee:
+    profiles: [full]
+    image: school/fee:local
+    build: {context: services/fee, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-fee: {condition: service_completed_successfully}
+      aws-init: {condition: service_completed_successfully}
+    environment:
+      <<: [*app-env, *local-aws]
+      DB_USER: fee_svc                  # read/write rows only
+      DB_PASSWORD: ${FEE_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+      STUDENT_SERVICE_URL: http://student:8000
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+
+  attendance:
+    profiles: [full]
+    image: school/attendance:local
+    build: {context: services/attendance, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-attendance: {condition: service_completed_successfully}
+      aws-init: {condition: service_completed_successfully}
+    environment:
+      <<: [*app-env, *local-aws]
+      DB_USER: attendance_svc                  # read/write rows only
+      DB_PASSWORD: ${ATTENDANCE_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+      STUDENT_SERVICE_URL: http://student:8000
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+
+  notification:
+    profiles: [full]
+    image: school/notification:local
+    build: {context: services/notification, dockerfile: ../../docker/python-service.Dockerfile}
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-notification: {condition: service_completed_successfully}
+    environment:
+      <<: *app-env
+      DB_USER: notification_svc                  # read/write rows only
+      DB_PASSWORD: ${NOTIFICATION_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+
+  notification-worker:                  # the SAME image as notification, started with a different command
+    profiles: [full]
+    image: school/notification:local
+    pull_policy: never
+    restart: unless-stopped
+    <<: *hardening
+    depends_on:
+      migrate-notification: {condition: service_completed_successfully}
+      aws-init: {condition: service_completed_successfully}
+    environment:
+      <<: [*app-env, *local-aws]
+      DB_USER: notification_svc
+      DB_PASSWORD: ${NOTIFICATION_APP_PASSWORD:?}
+      JWT_PUBLIC_KEY_FILE: /run/keys/jwt_public.pem
+      SNS_TOPIC_ARN: arn:aws:sns:ap-south-1:123456789012:school-notifications
+      POLL_WAIT_SECONDS: "5"
+    volumes:
+      - ./.dev-keys/jwt_public.pem:/run/keys/jwt_public.pem:ro
+    command: ["python", "-m", "app.worker"]
+    healthcheck:                        # the worker has no HTTP port: it proves it is alive by touching a file
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/tmp/notification-worker-heartbeat')<60 else 1)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
+
+  frontend:                             # stands in for CloudFront (static files) + the ALB (routes /api/v1/...)
+    profiles: [full]
+    image: school/frontend:local
+    build: {context: frontend}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [auth, admission, student, fee, attendance, notification]
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  school-pgdata:

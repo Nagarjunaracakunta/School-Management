@@ -1,0 +1,14 @@
+# Extends gitleaks' built-in rules; nothing is switched off globally.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "curl -u \"$TOKEN:\" passes an environment VARIABLE, not a literal credential"
+condition = "AND"
+paths = ['''^docs/sonarqube\.md$''', '''^scripts/ci/sonar-quality-gate\.sh$''']
+regexTarget = "line"
+regexes = ['''-u "\$\{?[A-Z_]+\}?:"''']
+
+[[allowlists]]
+description = "Local-only throwaway files that are git-ignored (never committed) and folders of third-party code"
+paths = ['''^\.dev-keys/''', '''^\.dev-secrets/''', '''^\.e2e/''', '''^\.venv-e2e/''', '''(^|/)\.venv/''', '''(^|/)node_modules/''', '''(^|/)\.terraform/''']

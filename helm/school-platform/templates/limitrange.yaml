@@ -1,0 +1,15 @@
+{{- if .Values.limitRange.enabled }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  labels:
+    app.kubernetes.io/part-of: school
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        {{- toYaml .Values.limitRange.defaultRequest | nindent 8 }}
+      default:
+        {{- toYaml .Values.limitRange.defaultLimit | nindent 8 }}
+{{- end }}

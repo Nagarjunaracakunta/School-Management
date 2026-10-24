@@ -1,0 +1,5 @@
+# stage / auth. The GitOps pipeline (Phase 16/19) changes ONLY the image tag below, in a commit, to deploy.
+# 0000000 is a placeholder that no build produces: replace it with a real git commit SHA.
+image:
+  tag: "0000000"
+replicaCount: 2

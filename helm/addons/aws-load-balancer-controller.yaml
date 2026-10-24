@@ -1,0 +1,36 @@
+# Values for the upstream chart eks/aws-load-balancer-controller. clusterName, region and vpcId are passed by
+# scripts/helm/install-addons.sh from Terraform's outputs (they differ per environment).
+#
+# The controller turns every Kubernetes Ingress (class "alb") into rules on ONE shared Application Load Balancer.
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller    # Terraform linked this exact name, in kube-system, to the controller's IAM role (Pod Identity)
+  automountServiceAccountToken: true    # the controller DOES talk to the Kubernetes API (unlike our services)
+
+defaultTargetType: ip                   # send traffic straight to pods, not through node ports
+enableShield: false                     # DDoS and web-firewall protection sit in front, at CloudFront
+enableWaf: false
+enableWafv2: false
+
+podDisruptionBudget:
+  maxUnavailable: 1
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { memory: 256Mi }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities: { drop: ["ALL"] }
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: aws-load-balancer-controller

@@ -1,0 +1,62 @@
+name: Deploy frontend
+
+# Publishes the React bundle of one commit to one environment's bucket and invalidates CloudFront. The bundle is environment-neutral
+# (it calls the relative address /api/v1), so the SAME file goes to dev, stage and prod. Run it by hand: Actions, Deploy frontend.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options: [dev, stage, prod]
+        default: dev
+      sha:
+        description: Commit to deploy (empty = the tip of main)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # One GitHub Environment per AWS account: frontend-dev, frontend-stage, frontend-prod. Each holds that account's variables
+    # (AWS_REGION, AWS_FRONTEND_DEPLOY_ROLE_ARN, FRONTEND_BUCKET, CLOUDFRONT_DISTRIBUTION_ID). Give frontend-prod required reviewers.
+    environment: frontend-${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha || 'main' }}
+          persist-credentials: false
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the bundle (tests first)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_FRONTEND_DEPLOY_ROLE_ARN }} # an address, not a secret
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Publish
+        env:
+          BUCKET: ${{ vars.FRONTEND_BUCKET }}
+          DISTRIBUTION: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: scripts/e2e/deploy-frontend.sh frontend/dist "$BUCKET" "$DISTRIBUTION"
+      - name: Record what is live
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+          TARGET: ${{ inputs.environment }}
+        run: echo "frontend ${SHA} is live in ${TARGET}" >> "$GITHUB_STEP_SUMMARY"

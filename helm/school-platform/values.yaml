@@ -1,0 +1,25 @@
+# Same `global` block as school-service: both charts read helm/environments/<env>/common.yaml.
+global:
+  environment: dev
+  region: ap-south-1
+  imageRegistry: ""
+  vpcCidr: ""
+  migrationServiceAccount: db-migrator
+  secrets:
+    dbAppArns: {}
+    dbMigratorArns: {}
+    jwtPublicKeyArn: ""
+    jwtPrivateKeyArn: ""
+    rdsMasterArn: ""
+
+# The database bootstrap tool (docker/db-tools.Dockerfile). Its tag is the git commit SHA, bumped by CI like any service.
+dbTools:
+  image:
+    tag: ""
+  activeDeadlineSeconds: 900
+
+# Defaults for pods that forget to set resources
+limitRange:
+  enabled: true
+  defaultRequest: { cpu: 50m, memory: 128Mi }
+  defaultLimit: { memory: 512Mi }

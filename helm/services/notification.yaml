@@ -1,0 +1,16 @@
+service:
+  name: notification
+features:
+  events: consumer             # reads the events queue
+  notificationsTopic: true     # hands messages to the notifications topic
+ingress:
+  enabled: true
+  order: 30
+  paths:
+    - { path: /api/v1/notifications, type: Prefix }
+worker:
+  enabled: true                # the queue consumer: same image, command `python -m app.worker`
+  replicaCount: 2
+networkPolicy:
+  callers: []
+  calls: []

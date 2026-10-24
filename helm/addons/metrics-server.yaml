@@ -1,0 +1,19 @@
+# Values for the upstream chart metrics-server/metrics-server. It measures CPU and memory of every pod, which is what the
+# HorizontalPodAutoscaler (prod) and `kubectl top` read. Without it autoscaling silently never scales.
+replicas: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 128Mi }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile: { type: RuntimeDefault }
+  capabilities: { drop: ["ALL"] }

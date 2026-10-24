@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["global", "dbTools"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "region", "imageRegistry", "vpcCidr", "secrets"],
+      "properties": {
+        "environment": { "enum": ["dev", "stage", "prod"] },
+        "region": { "type": "string" },
+        "imageRegistry": { "type": "string", "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$" },
+        "vpcCidr": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" },
+        "migrationServiceAccount": { "type": "string", "minLength": 1 },
+        "eventsQueueUrl": { "type": "string" },
+        "notificationsTopicArn": { "type": "string" },
+        "jwtIssuer": { "type": "string" },
+        "jwtAudience": { "type": "string" },
+        "logLevel": { "type": "string" },
+        "ingress": { "type": "object" },
+        "secrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dbAppArns", "dbMigratorArns", "rdsMasterArn"],
+          "properties": {
+            "dbAppArns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "pattern": "^arn:aws:secretsmanager:" } },
+            "dbMigratorArns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "pattern": "^arn:aws:secretsmanager:" } },
+            "jwtPublicKeyArn": { "type": "string" },
+            "jwtPrivateKeyArn": { "type": "string" },
+            "rdsMasterArn": { "type": "string", "pattern": "^arn:aws:secretsmanager:" }
+          }
+        }
+      }
+    },
+    "dbTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag"],
+          "properties": { "tag": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" } }
+        },
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 60 }
+      }
+    },
+    "limitRange": { "type": "object" }
+  }
+}

@@ -1,0 +1,178 @@
+name: Build and push images
+
+# After a change is merged to main: build each changed image for linux/amd64, scan it, and push it to Amazon ECR tagged with the
+# git commit SHA. No AWS access key exists anywhere: the job proves who it is to AWS with a short-lived GitHub OIDC token
+# (terraform/modules/github-oidc), and the role it receives can push to our repositories and do nothing else.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "Comma-separated images (for example fee,student), or 'all'"
+        default: all
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: false # never cancel a push half way through
+
+jobs:
+  plan:
+    name: which images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.pick.outputs.images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: detect
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$MANUAL" = "true" ]; then
+            python3 scripts/ci/changed.py --all --github-output
+          else
+            python3 scripts/ci/changed.py --base "$BASE" --head "$HEAD" --github-output
+          fi
+      - id: pick
+        env:
+          ALL_IMAGES: ${{ steps.detect.outputs.images }}
+          REQUESTED: ${{ github.event.inputs.images || 'all' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          images = json.loads(os.environ["ALL_IMAGES"])
+          requested = os.environ["REQUESTED"].strip()
+          if requested != "all":
+              wanted = {n.strip() for n in requested.split(",") if n.strip()}
+              unknown = wanted - {i["name"] for i in images}
+              if unknown:
+                  raise SystemExit(f"not buildable here: {sorted(unknown)}")
+              images = [i for i in images if i["name"] in wanted]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("images=" + json.dumps(images, separators=(",", ":")) + "\n")
+          print(f"building: {[i['name'] for i in images]}")
+          PY
+
+  build:
+    name: build ${{ matrix.image.name }}
+    needs: plan
+    if: needs.plan.outputs.images != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The GitHub Environment is what AWS trusts (the token's subject is "repo:OWNER/REPO:environment:registry-push").
+    # Configure it to allow deployments from the main branch only.
+    environment: registry-push
+    permissions:
+      contents: read
+      id-token: write # lets this job ask GitHub for an OIDC token; no other job can
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }} # a role ARN is an address, not a secret: stored as a repository variable
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      - id: ref
+        env:
+          NAME: ${{ matrix.image.name }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          echo "repository=school/${NAME}" >> "$GITHUB_OUTPUT"
+          echo "uri=${REGISTRY}/school/${NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - id: exists
+        name: Was this exact commit already pushed? (tags are immutable, so a re-run must not push again)
+        env:
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+        run: |
+          if aws ecr describe-images --repository-name "$REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${REPOSITORY}:${GITHUB_SHA} is already in ECR; nothing to push"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Tests run inside the build (Python 3.12 / Node as shipped)
+        if: steps.exists.outputs.exists == 'false' && matrix.image.name != 'frontend'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          target: test
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+      - name: Build the runtime image
+        if: steps.exists.outputs.exists == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64 # our EKS nodes are x86_64; an image built on an Apple Silicon laptop would not start
+          load: true
+          tags: ${{ steps.ref.outputs.uri }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+      - name: Scan the exact image that will be pushed
+        if: steps.exists.outputs.exists == 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.uri }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+      - name: Software bill of materials (what is inside the image)
+        if: steps.exists.outputs.exists == 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.uri }}
+          format: cyclonedx
+          output: sbom-${{ matrix.image.name }}.cdx.json
+      - name: Push (the same image that was scanned, not a rebuild)
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          URI: ${{ steps.ref.outputs.uri }}
+        run: docker push "$URI"
+      - id: digest
+        name: Record what was pushed
+        env:
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+          URI: ${{ steps.ref.outputs.uri }}
+          NAME: ${{ matrix.image.name }}
+        run: |
+          digest=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" \
+                   --query 'imageDetails[0].imageDigest' --output text)
+          printf '{"name":"%s","tag":"%s","digest":"%s","uri":"%s"}\n' "$NAME" "$GITHUB_SHA" "$digest" "$URI" > "image-${NAME}.json"
+          {
+            echo "### ${NAME}"
+            echo "- image: \`${URI}\`"
+            echo "- digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.image.name }}
+          path: |
+            image-${{ matrix.image.name }}.json
+            sbom-${{ matrix.image.name }}.cdx.json
+          retention-days: 30
+          if-no-files-found: ignore

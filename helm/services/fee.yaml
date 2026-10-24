@@ -1,0 +1,22 @@
+service:
+  name: fee
+features:
+  events: producer
+  studentApi: true
+ingress:
+  enabled: true
+  order: 10             # BEFORE student (20): /students/{id}/fees looks like a Student path but belongs here
+  paths:
+    - { path: /api/v1/students/*/fees, type: ImplementationSpecific }
+    - { path: /api/v1/fees, type: Prefix }
+    - { path: /api/v1/fee-structures, type: Prefix }
+    - { path: /api/v1/payments, type: Prefix }
+networkPolicy:
+  callers: []
+  calls: [student]
+cronJobs:
+  # Every morning at 08:30 India time (03:00 UTC): queue a reminder for each overdue fee that has not been reminded recently.
+  # It only WRITES events to the Fee service's own outbox; the API pods publish them to the queue.
+  - name: overdue-reminders
+    schedule: "0 3 * * *"
+    command: ["python", "-m", "app.jobs.overdue_reminders"]

@@ -1,0 +1,5 @@
+{{ include "school.name" . }} {{ .Values.image.tag }} deployed to {{ .Release.Namespace }}.
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "school.name" . }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "school.name" . }} --tail=50
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "school.name" . }}

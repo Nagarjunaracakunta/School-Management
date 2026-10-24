@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "school.name" . }}
+  labels:
+    {{- include "school.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP # reachable only inside the cluster; the load balancer goes straight to the pods (target-type ip)
+  ports:
+    - name: http
+      port: 80 # so other services can call http://student without a port number
+      targetPort: http
+  selector:
+    {{- include "school.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api

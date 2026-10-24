@@ -1,0 +1,39 @@
+# A local SonarQube for learning (Community Build). It is NOT part of the application.
+#
+#   scripts/ci/sonar-local.sh start                         # creates a random database password, starts it; first start takes ~2 minutes; open http://localhost:9000
+#   (first login admin / admin: you are forced to change it)
+#   scripts/ci/sonar-local.sh stop                          # keeps your data
+#   scripts/ci/sonar-local.sh scan <token>                  # analyse this repository (see docs/sonarqube.md)
+#
+# Linux hosts also need:  sudo sysctl -w vm.max_map_count=524288   (Elasticsearch inside SonarQube requires it)
+name: sonar
+
+services:
+  sonar-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_DB: sonar
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:?run scripts/ci/sonar-local.sh first}
+    volumes: [sonar-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sonar"]
+      interval: 5s
+      retries: 10
+
+  sonarqube:
+    image: sonarqube:community
+    depends_on:
+      sonar-db: { condition: service_healthy }
+    ports: ["127.0.0.1:9000:9000"] # reachable from this machine only
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:?run scripts/ci/sonar-local.sh first}
+    volumes: [sonar-data:/opt/sonarqube/data, sonar-ext:/opt/sonarqube/extensions, sonar-logs:/opt/sonarqube/logs]
+
+volumes:
+  sonar-db:
+  sonar-data:
+  sonar-ext:
+  sonar-logs:

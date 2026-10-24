@@ -1,0 +1,14 @@
+terraform {
+  required_version = ">= 1.11, < 2.0" # write-only arguments and ephemeral resources need Terraform 1.11 or newer
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.7"
+    }
+  }
+}

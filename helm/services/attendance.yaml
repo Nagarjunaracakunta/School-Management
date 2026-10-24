@@ -1,0 +1,15 @@
+service:
+  name: attendance
+features:
+  events: producer
+  studentApi: true
+ingress:
+  enabled: true
+  order: 10             # BEFORE student (20): /students/{id}/attendance and /teachers/{id}/attendance belong here
+  paths:
+    - { path: /api/v1/students/*/attendance, type: ImplementationSpecific }
+    - { path: /api/v1/teachers/*/attendance, type: ImplementationSpecific }
+    - { path: /api/v1/attendance, type: Prefix }
+networkPolicy:
+  callers: []
+  calls: [student]

@@ -1,0 +1,202 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "school-service values",
+  "description": "Strict on purpose: a misspelt key is an error, not a silently ignored setting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "global", "image"],
+  "properties": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "enum": ["auth", "admission", "student", "fee", "attendance", "notification"] }
+      }
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "region", "imageRegistry", "vpcCidr", "secrets"],
+      "properties": {
+        "environment": { "enum": ["dev", "stage", "prod"] },
+        "region": { "type": "string", "pattern": "^[a-z]{2}-[a-z]+-[0-9]$" },
+        "imageRegistry": { "type": "string", "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$" },
+        "vpcCidr": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" },
+        "jwtIssuer": { "type": "string", "minLength": 1 },
+        "jwtAudience": { "type": "string", "minLength": 1 },
+        "logLevel": { "enum": ["DEBUG", "INFO", "WARNING", "ERROR"] },
+        "migrationServiceAccount": { "type": "string", "minLength": 1 },
+        "eventsQueueUrl": { "type": "string" },
+        "notificationsTopicArn": { "type": "string" },
+        "secrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dbAppArns": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^arn:aws:secretsmanager:" } },
+            "dbMigratorArns": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^arn:aws:secretsmanager:" } },
+            "jwtPublicKeyArn": { "type": "string" },
+            "jwtPrivateKeyArn": { "type": "string" },
+            "rdsMasterArn": { "type": "string" }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "groupName": { "type": "string" },
+            "certificateArn": { "type": "string" },
+            "securityGroupId": { "type": "string" }
+          }
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag"],
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string", "pattern": "^[0-9a-f]{7,40}$", "description": "a git commit SHA; never 'latest'" },
+        "digest": { "type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$" },
+        "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jwtPublicKey": { "type": "boolean" },
+        "jwtPrivateKey": { "type": "boolean" },
+        "events": { "enum": ["none", "producer", "consumer"] },
+        "notificationsTopic": { "type": "boolean" },
+        "studentApi": { "type": "boolean" }
+      }
+    },
+    "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "revisionHistoryLimit": { "type": "integer", "minimum": 0 },
+    "config": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startup": { "$ref": "#/definitions/probe" },
+        "liveness": { "$ref": "#/definitions/probe" },
+        "readiness": { "$ref": "#/definitions/probe" }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "maxSurge": { "type": ["integer", "string"] }, "maxUnavailable": { "type": ["integer", "string"] } }
+    },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+    "preStopSleepSeconds": { "type": "integer", "minimum": 0 },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 10, "maximum": 95 }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" }, "minAvailable": { "type": ["integer", "string"] } }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "order": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^/" },
+              "type": { "enum": ["Prefix", "Exact", "ImplementationSpecific"] }
+            }
+          }
+        },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "callers": { "type": "array", "items": { "enum": ["auth", "admission", "student", "fee", "attendance", "notification"] } },
+        "calls": { "type": "array", "items": { "enum": ["auth", "admission", "student", "fee", "attendance", "notification"] } }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "resources": { "type": "object" },
+        "heartbeatFile": { "type": "string" },
+        "heartbeatMaxAgeSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" }, "activeDeadlineSeconds": { "type": "integer", "minimum": 30 } }
+    },
+    "cronJobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "schedule", "command"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$" },
+          "schedule": { "type": "string", "minLength": 9 },
+          "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "activeDeadlineSeconds": { "type": "integer", "minimum": 30 }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "name": { "type": "string" }, "annotations": { "type": "object" } }
+    },
+    "podAnnotations": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" }
+  },
+  "definitions": {
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

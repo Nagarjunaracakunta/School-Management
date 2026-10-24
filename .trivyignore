@@ -1,0 +1,3 @@
+# Vulnerabilities we have consciously decided to accept, one per line, each WITH a reason and an expiry date, e.g.
+#   CVE-2025-12345  # no fix upstream; not reachable because ...; revisit 2026-12-01
+# An empty file is the goal.

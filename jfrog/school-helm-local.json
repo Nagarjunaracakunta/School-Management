@@ -1,0 +1,1 @@
+{"key":"school-helm-local","rclass":"local","packageType":"helm","description":"Packaged Helm charts, one version per commit","repoLayoutRef":"simple-default","handleReleases":true,"handleSnapshots":false,"xrayIndex":true}

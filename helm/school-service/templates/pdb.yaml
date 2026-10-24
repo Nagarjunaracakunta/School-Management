@@ -1,0 +1,15 @@
+{{- $replicas := ternary .Values.autoscaling.minReplicas .Values.replicaCount .Values.autoscaling.enabled }}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int $replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "school.name" . }}
+  labels:
+    {{- include "school.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "school.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+{{- end }}

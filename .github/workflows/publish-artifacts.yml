@@ -1,0 +1,115 @@
+name: Publish artifacts to JFrog
+
+# Container images go to ECR (build-images.yml). Everything else we build that must be kept, versioned and traceable goes to
+# JFrog Artifactory: the frontend bundle and the Helm charts. Each upload carries the git commit and the workflow run, and the
+# whole run is recorded as one "build" in Artifactory (build info), so any file can be traced back to its source.
+# JFrog does not get an API key either: it trusts the GitHub OIDC token (an "OIDC integration" configured in JFrog).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: what changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.detect.outputs.frontend }}
+      helm: ${{ steps.detect.outputs.helm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: detect
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [ "$MANUAL" = "true" ]; then
+            python3 scripts/ci/changed.py --all --github-output
+          else
+            python3 scripts/ci/changed.py --base "$BASE" --head "$HEAD" --github-output
+          fi
+
+  publish:
+    name: publish
+    needs: plan
+    if: needs.plan.outputs.frontend == 'true' || needs.plan.outputs.helm == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: artifact-publish # JFrog's OIDC integration trusts this environment (restrict it to main)
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      JF_URL: ${{ vars.JFROG_URL }} # an address, not a secret
+      BUILD_NAME: school-management
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jfrog/setup-jfrog-cli@1a84ddcff2d475751d8392ef6d7ecb478a7cfe53 # v5.3.1
+        env:
+          JF_URL: ${{ vars.JFROG_URL }}
+        with:
+          oidc-provider-name: ${{ vars.JFROG_OIDC_PROVIDER }}
+      - name: Can we reach Artifactory?
+        run: jf rt ping
+
+      # ---- the React bundle: built once, deployed unchanged to every environment ---------------------------------------
+      # The bundle calls the relative address /api/v1, so it contains nothing specific to dev, stage or prod.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.plan.outputs.frontend == 'true'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and upload the frontend bundle
+        if: needs.plan.outputs.frontend == 'true'
+        working-directory: frontend
+        run: |
+          set -eu
+          npm ci && npm run build
+          tar -C dist -czf "../frontend-dist-${GITHUB_SHA}.tar.gz" .
+          cd ..
+          sha256sum "frontend-dist-${GITHUB_SHA}.tar.gz" > "frontend-dist-${GITHUB_SHA}.tar.gz.sha256"
+          jf rt upload "frontend-dist-${GITHUB_SHA}.tar.gz*" "school-generic-local/frontend/${GITHUB_SHA}/" \
+            --flat --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER" --module frontend \
+            --target-props "git.sha=${GITHUB_SHA};git.repo=${GITHUB_REPOSITORY};github.run=${GITHUB_RUN_ID}"
+
+      # ---- the Helm charts: one immutable version per commit -----------------------------------------------------------
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        if: needs.plan.outputs.helm == 'true'
+        with:
+          version: v4.3.1
+      - name: Package and upload the Helm charts
+        if: needs.plan.outputs.helm == 'true'
+        run: |
+          set -eu
+          short="${GITHUB_SHA::7}"
+          mkdir charts
+          for chart in school-platform school-service; do
+            base=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' "helm/$chart/Chart.yaml" | head -n1)
+            helm package "helm/$chart" --version "${base}-sha.${short}" --destination charts
+          done
+          jf rt upload "charts/*.tgz" "school-helm-local/" --flat \
+            --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER" --module charts \
+            --target-props "git.sha=${GITHUB_SHA};git.repo=${GITHUB_REPOSITORY};github.run=${GITHUB_RUN_ID}"
+
+      # ---- tie everything together -------------------------------------------------------------------------------------
+      - name: Record the build in Artifactory
+        run: |
+          jf rt build-add-git "$BUILD_NAME" "$BUILD_NUMBER"
+          jf rt build-collect-env "$BUILD_NAME" "$BUILD_NUMBER"
+          jf rt build-publish "$BUILD_NAME" "$BUILD_NUMBER"

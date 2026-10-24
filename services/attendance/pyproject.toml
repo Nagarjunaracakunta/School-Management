@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-report=xml"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

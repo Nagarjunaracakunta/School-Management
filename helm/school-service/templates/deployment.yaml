@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "school.name" . }}
+  labels:
+    {{- include "school.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "school.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.strategy.maxSurge }}
+      maxUnavailable: {{ .Values.strategy.maxUnavailable }}
+  template:
+    metadata:
+      labels:
+        {{- include "school.labels" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        # A changed ConfigMap changes this hash, which restarts the pods so they pick up the new settings.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "school.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "school.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        {{- include "school.topologySpread" (dict "root" . "component" "api") | nindent 8 }}
+      containers:
+        - name: {{ include "school.name" . }}
+          image: {{ include "school.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "school.name" . }}
+          securityContext:
+            {{- include "school.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: {{ .Values.probes.startup.path }}, port: http }
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet: { path: {{ .Values.probes.liveness.path }}, port: http }
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet: { path: {{ .Values.probes.readiness.path }}, port: http }
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+          volumeMounts:
+            {{- include "school.tmpMount" . | nindent 12 }}
+      volumes:
+        {{- include "school.tmpVolume" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

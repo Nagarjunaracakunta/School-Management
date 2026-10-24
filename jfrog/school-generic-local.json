@@ -1,0 +1,1 @@
+{"key":"school-generic-local","rclass":"local","packageType":"generic","description":"Build outputs that are not container images: frontend bundle, checksums","repoLayoutRef":"simple-default","handleReleases":true,"handleSnapshots":false,"xrayIndex":true}

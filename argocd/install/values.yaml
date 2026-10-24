@@ -1,0 +1,23 @@
+# Values for the Argo CD Helm chart (argo/argo-cd, chart 10.11.1). Argo CD runs INSIDE each environment's cluster and
+# pulls from Git: nothing outside the cluster needs credentials to the cluster.
+# Only what differs from the chart's defaults is listed.
+configs:
+  cm:
+    timeout.reconciliation: 180s # how often Git is polled; a webhook can make it instant
+    application.resourceTrackingMethod: annotation # label tracking breaks on resources that copy labels
+  params:
+    server.insecure: false
+
+dex:
+  enabled: false # single sign-on: connect your company identity provider here (OIDC) instead
+notifications:
+  enabled: false # Slack/e-mail messages about sync results: enable when a channel exists
+
+controller:
+  replicas: 1 # one controller is enough for 7 applications
+redis-ha:
+  enabled: false # prod with many applications: true (needs 3 nodes)
+
+server:
+  service:
+    type: ClusterIP # not exposed to the internet. Reach it with:  kubectl -n argocd port-forward svc/argocd-server 8080:443

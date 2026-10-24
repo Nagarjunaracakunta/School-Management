@@ -1,0 +1,18 @@
+service:
+  name: auth
+features:
+  jwtPublicKey: false   # derives the public key from the private one itself
+  jwtPrivateKey: true   # the ONLY service that signs tokens
+resources:
+  requests: { cpu: 200m, memory: 384Mi }
+  limits: { memory: 768Mi }   # Argon2 password hashing uses 64 MiB per login in flight
+ingress:
+  enabled: true
+  order: 30
+  paths:
+    - { path: /api/v1/auth, type: Prefix }
+    - { path: /api/v1/users, type: Prefix }
+    - { path: /.well-known/jwks.json, type: Exact }
+networkPolicy:
+  callers: []
+  calls: []

@@ -1,0 +1,51 @@
+{{- $vpc := required "global.vpcCidr is required" .Values.global.vpcCidr }}
+# Everything in the namespace is forbidden by default. Each service's own NetworkPolicy (school-service chart) then opens only
+# what that service needs. A pod with no policy of its own can neither be reached nor reach anything.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels:
+    app.kubernetes.io/part-of: school
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# The bootstrap job needs: DNS, the Pod Identity agent, AWS APIs (Secrets Manager) and the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-bootstrap
+  labels:
+    app.kubernetes.io/part-of: school
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 169.254.170.23/32 }
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
+        - ipBlock: { cidr: {{ $vpc }} }
+      ports:
+        - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [{{ $vpc }}]
+      ports:
+        - { protocol: TCP, port: 443 }

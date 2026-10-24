@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+Dockerfile
+docker
+!docker/nginx.conf
+!docker/security-headers.inc
+!docker/proxy.inc

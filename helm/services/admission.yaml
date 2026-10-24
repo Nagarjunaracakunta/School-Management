@@ -1,0 +1,13 @@
+service:
+  name: admission
+features:
+  events: producer      # publishes admission.* events through its outbox
+  studentApi: true      # calls the Student service when an admission is enrolled
+ingress:
+  enabled: true
+  order: 30
+  paths:
+    - { path: /api/v1/admissions, type: Prefix }
+networkPolicy:
+  callers: []
+  calls: [student]

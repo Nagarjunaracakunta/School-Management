@@ -1,0 +1,6 @@
+School platform base installed in {{ .Release.Namespace }}.
+
+Before installing, label the namespace so Kubernetes enforces the restricted pod profile:
+  kubectl label namespace {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+
+Then install the six services (any order; each runs its own migration first).

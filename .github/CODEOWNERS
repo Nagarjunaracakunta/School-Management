@@ -1,0 +1,11 @@
+# Who must review changes to which paths.
+# Replace @your-github-username with your handle (or a team, e.g. @your-org/platform).
+# With branch protection "Require review from Code Owners" this becomes enforced.
+
+*                       @your-github-username
+/terraform/             @your-github-username
+/helm/                  @your-github-username
+/.github/               @your-github-username
+/argocd/                @your-github-username
+# prod's image tags: the pull request that changes them is the production approval. Use a SEPARATE, smaller group here.
+/helm/environments/prod/ @your-github-username

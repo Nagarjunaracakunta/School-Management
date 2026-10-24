@@ -1,0 +1,81 @@
+name: Security audit
+
+# Dependencies and configuration are checked against vulnerability databases. New vulnerabilities appear every week WITHOUT any
+# change in our code, so this also runs on a schedule, not only when someone edits a requirements file.
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  pull_request:
+    paths:
+      - "**/requirements*.txt"
+      - "frontend/package-lock.json"
+      - "docker/**"
+      - "terraform/**"
+      - "helm/**"
+      - ".github/workflows/security.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-dependencies:
+    name: pip-audit (${{ matrix.path }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        path:
+          - services/auth
+          - services/admission
+          - services/student
+          - services/fee
+          - services/attendance
+          - services/notification
+          - tools/db-bootstrap
+          - lambdas/notification_delivery
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.9.0
+      - name: Audit the pinned runtime dependencies
+        working-directory: ${{ matrix.path }}
+        run: |
+          file=requirements.txt
+          [ -f "$file" ] || file=requirements-dev.txt
+          pip-audit -r "$file" --strict --disable-pip
+
+  frontend-dependencies:
+    name: npm audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+  configuration:
+    name: misconfiguration scan (Dockerfiles, Terraform, Helm)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore

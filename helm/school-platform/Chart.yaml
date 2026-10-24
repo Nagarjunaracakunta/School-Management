@@ -1,0 +1,6 @@
+apiVersion: v2
+name: school-platform
+description: Shared, namespace-wide parts of the School Management platform - install this BEFORE the services
+type: application
+version: 0.1.0
+appVersion: "0"

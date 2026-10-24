@@ -1,0 +1,4 @@
+# prod. CI bumps this tag like any other image (docker/db-tools.Dockerfile). 0000000 is a placeholder no build produces.
+dbTools:
+  image:
+    tag: "0000000"

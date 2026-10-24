@@ -1,0 +1,14 @@
+service:
+  name: student
+ingress:
+  enabled: true
+  order: 20             # AFTER fee and attendance (10), which own /students/{id}/fees and /students/{id}/attendance
+  paths:
+    - { path: /api/v1/students, type: Prefix }
+    - { path: /api/v1/classes, type: Prefix }
+    - { path: /api/v1/sections, type: Prefix }
+    - { path: /api/v1/subjects, type: Prefix }
+    - { path: /api/v1/teachers, type: Prefix }
+networkPolicy:
+  callers: [admission, fee, attendance]
+  calls: []

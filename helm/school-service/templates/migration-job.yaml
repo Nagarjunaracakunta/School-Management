@@ -1,0 +1,50 @@
+{{- if .Values.migrations.enabled }}
+# Applies database migrations BEFORE the new version starts. Helm runs it as a pre-install/pre-upgrade hook; Argo CD runs
+# the same hook as PreSync. If it fails, the deployment stops and the old version keeps running. Migrations must be backward
+# compatible ("expand, then contract", ADR 0002): old and new pods run side by side for a moment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "school.name" . }}-migrate
+  labels:
+    {{- include "school.labels" (dict "root" . "component" "migration") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "school.labels" (dict "root" . "component" "migration") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      # The schema-changing login may be read only by THIS service account (see terraform: the db-migrator role).
+      serviceAccountName: {{ .Values.global.migrationServiceAccount }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "school.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "school.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          # Inline, not envFrom: on the very first install this hook runs BEFORE the release's ConfigMap exists.
+          env:
+            - name: DB_SECRET_ARN
+              value: {{ include "school.dbMigratorArn" . | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.global.region | quote }}
+          securityContext:
+            {{- include "school.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            {{- include "school.tmpMount" . | nindent 12 }}
+      volumes:
+        {{- include "school.tmpVolume" . | nindent 8 }}
+{{- end }}

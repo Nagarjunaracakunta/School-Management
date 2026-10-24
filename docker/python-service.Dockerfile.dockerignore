@@ -1,0 +1,17 @@
+# Keeps secrets, caches and local files out of the build context (and so out of image layers).
+# Applies to every service build (BuildKit reads "<Dockerfile name>.dockerignore" next to the Dockerfile).
+.venv
+.env
+.env.*
+!.env.example
+*.db
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+*.pem
+*.key

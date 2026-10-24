@@ -1,0 +1,129 @@
+# Defaults for EVERY service. Per-service differences are in helm/services/<service>.yaml; per-environment values
+# (account ids, queue URLs, secret ARNs, image tags) are in helm/environments/<env>/. Later files win.
+
+# The service this release runs. Required. Also the name of every object it creates (Deployment, Service, ...),
+# so other pods reach it at http://<service>.
+service:
+  name: ""
+
+# ---- values shared by all services in an environment (generated from `terraform output`, see scripts/helm) -------------
+global:
+  environment: dev
+  region: ap-south-1
+  imageRegistry: ""        # <account>.dkr.ecr.<region>.amazonaws.com
+  vpcCidr: ""              # for the network policies: where the load balancer and the database are
+  jwtIssuer: school-auth
+  jwtAudience: school-api
+  logLevel: INFO
+  migrationServiceAccount: db-migrator   # the only service account allowed to read the schema-changing logins
+  eventsQueueUrl: ""
+  notificationsTopicArn: ""
+  secrets:                 # ARNs of Secrets Manager secrets. The values are NOT secret; the secrets they point to are.
+    dbAppArns: {}          #   <service> -> the service's runtime login
+    dbMigratorArns: {}     #   <service> -> the service's schema-changing login (migration job only)
+    jwtPublicKeyArn: ""
+    jwtPrivateKeyArn: ""
+    rdsMasterArn: ""       # the database administrator login (used only by the bootstrap job in helm/school-platform)
+  ingress:
+    groupName: ""          # all services share ONE load balancer by using the same group name
+    certificateArn: ""     # empty = HTTP listener only (a lab setup); set it for HTTPS
+    securityGroupId: ""    # the load balancer's security group (allows only CloudFront)
+
+image:
+  repository: ""           # empty = <global.imageRegistry>/school/<service>
+  tag: ""                  # REQUIRED: the git commit SHA built by CI. "latest" is refused.
+  digest: ""               # optional sha256:... (pins the exact bytes; wins over the tag)
+  pullPolicy: IfNotPresent
+
+# What this service talks to. These flags decide which settings the ConfigMap contains.
+features:
+  jwtPublicKey: true       # verifies tokens
+  jwtPrivateKey: false     # signs tokens (only the Auth service)
+  events: none             # none | producer (sends events to the queue) | consumer (reads them)
+  notificationsTopic: false
+  studentApi: false        # calls the Student service over REST
+
+containerPort: 8000
+replicaCount: 2
+revisionHistoryLimit: 5
+
+config: {}                 # extra non-secret environment variables
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi          # no CPU limit on purpose: a CPU limit throttles the service even when the node is idle
+
+probes:
+  startup:                 # gives the app up to 60s to start before liveness checks begin
+    path: /health
+    periodSeconds: 2
+    failureThreshold: 30
+  liveness:
+    path: /health          # "the process is alive" (does NOT check the database, see Phase 4)
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /ready           # "I can serve traffic" (checks the database)
+    periodSeconds: 10
+    failureThreshold: 3
+
+# Zero-downtime deploys: start one new pod, wait until it is ready, only then stop an old one.
+strategy:
+  maxSurge: 1
+  maxUnavailable: 0
+terminationGracePeriodSeconds: 40
+preStopSleepSeconds: 10    # keep serving while the load balancer finishes removing this pod
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true            # node upgrades may never take down every replica at once
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: alb
+  order: 50                # lower number = checked first (more specific services use a lower number)
+  paths: []                # [{ path: /api/v1/fees, type: Prefix }]
+  annotations: {}
+
+networkPolicy:
+  enabled: true
+  callers: []              # services allowed to call this one (e.g. student: [admission, fee, attendance])
+  calls: []                # services this one calls
+
+# A second Deployment from the SAME image with a different command (the Notification queue consumer).
+worker:
+  enabled: false
+  replicaCount: 1
+  command: ["python", "-m", "app.worker"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 384Mi
+  heartbeatFile: /tmp/notification-worker-heartbeat
+  heartbeatMaxAgeSeconds: 60
+
+# Runs `alembic upgrade head` as the schema-changing login BEFORE the new version starts (Helm hook; Argo CD runs it as PreSync).
+migrations:
+  enabled: true
+  activeDeadlineSeconds: 600
+
+# Scheduled jobs from the same image. [{ name, schedule (UTC), command, args }]
+cronJobs: []
+
+serviceAccount:
+  name: ""                 # empty = the service name. Must match the Pod Identity association made by Terraform.
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

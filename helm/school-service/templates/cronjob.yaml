@@ -1,0 +1,52 @@
+{{- range .Values.cronJobs }}
+---
+# Scheduled work from the service's own image, with the service's own database login and IAM role.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "school.name" $ }}-{{ .name }}
+  labels:
+    {{- include "school.labels" (dict "root" $ "component" "cron") | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }} # UTC
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid # a run that is still going blocks the next one: no overlapping runs
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ .activeDeadlineSeconds | default 900 }}
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "school.labels" (dict "root" $ "component" "cron") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "school.serviceAccountName" $ }}
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "school.podSecurityContext" $ | nindent 12 }}
+          containers:
+            - name: {{ .name }}
+              image: {{ include "school.image" $ | quote }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: {{ toJson .command }}
+              {{- with .args }}
+              args: {{ toJson . }}
+              {{- end }}
+              envFrom:
+                - configMapRef:
+                    name: {{ include "school.name" $ }}
+              securityContext:
+                {{- include "school.containerSecurityContext" $ | nindent 16 }}
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              volumeMounts:
+                {{- include "school.tmpMount" $ | nindent 16 }}
+          volumes:
+            {{- include "school.tmpVolume" $ | nindent 12 }}
+{{- end }}
